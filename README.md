@@ -69,7 +69,14 @@ cd Docker
 docker compose --env-file .env up
 ```
 
-### Step 5 - Run the Pipeline
+### Step 5 - Start Kestra
+## Docker Image
+A custom Docker image `oarait/pyspark-gcs:latest` is available on Docker Hub.
+It includes Java 17, PySpark, GCS connector and all required Python packages.
+Kestra pulls this image automatically when running the pipeline — no manual build needed.
+
+
+### Step 6 - Run the Pipeline
 1. Open Kestra UI at http://localhost:8080
 2. Login with admin@kestra.io / Admin1234!
 3. Run the full_pipeline flow under data_engineering namespace

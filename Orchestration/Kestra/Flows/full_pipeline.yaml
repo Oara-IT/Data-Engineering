@@ -77,7 +77,7 @@ tasks:
     type: io.kestra.plugin.scripts.python.Script
     taskRunner:
       type: io.kestra.plugin.scripts.runner.docker.Docker
-      image: pyspark-gcs:latest
+      image: oarait/pyspark-gcs:latest
     env:
       GCP_KEY: "{{secret('GCP_KEY')}}"
       PROJECT_ID: "{{secret('PROJECT_ID')}}"
