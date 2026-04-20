@@ -1,0 +1,171 @@
+id: full_pipeline
+namespace: data_engineering
+
+variables:
+  gcs_bucket: "gs://bronze-{{secret('PROJECT_ID')}}/raw"
+  silver_bucket: "gs://silver-{{secret('PROJECT_ID')}}/cleaned"
+  project_id: "{{secret('PROJECT_ID')}}"
+
+tasks:
+  # STEP 1 - Ingest from source to GCS Bronze
+  - id: extract_data_1
+    type: io.kestra.plugin.scripts.shell.Commands
+    outputFiles:
+      - "*.csv"
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - wget -qO zaf_data.csv "https://datacatalogfiles.worldbank.org/ddh-published/0042083/1/DR0052676/zaf-crowdsourcedpdcpilot02_final_obs_all_clean_1.csv"
+
+  - id: upload_to_gcs_data_1
+    type: io.kestra.plugin.gcp.gcs.Upload
+    serviceAccount: "{{secret('GCP_KEY')}}"
+    projectId: "{{secret('PROJECT_ID')}}"
+    from: "{{outputs.extract_data_1.outputFiles['zaf_data.csv']}}"
+    to: "{{vars.gcs_bucket}}/zaf_data.csv"
+
+  - id: extract_data_2
+    type: io.kestra.plugin.scripts.shell.Commands
+    outputFiles:
+      - "*.csv"
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - wget -qO phl_data.csv "https://datacatalogfiles.worldbank.org/ddh-published/0042083/1/DR0052672/phl-crowdsourcedpdcpilot02_final_obs_all_clean.csv"
+
+  - id: upload_to_gcs_data_2
+    type: io.kestra.plugin.gcp.gcs.Upload
+    serviceAccount: "{{secret('GCP_KEY')}}"
+    projectId: "{{secret('PROJECT_ID')}}"
+    from: "{{outputs.extract_data_2.outputFiles['phl_data.csv']}}"
+    to: "{{vars.gcs_bucket}}/phl_data.csv"
+
+  - id: extract_data_3
+    type: io.kestra.plugin.scripts.shell.Commands
+    outputFiles:
+      - "*.csv"
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - wget -qO nga_data.csv "https://datacatalogfiles.worldbank.org/ddh-published/0042083/1/DR0052670/nga-crowdsourcedpdcpilot02_final_obs_all_clean_1.csv"
+
+  - id: upload_to_gcs_data_3
+    type: io.kestra.plugin.gcp.gcs.Upload
+    serviceAccount: "{{secret('GCP_KEY')}}"
+    projectId: "{{secret('PROJECT_ID')}}"
+    from: "{{outputs.extract_data_3.outputFiles['nga_data.csv']}}"
+    to: "{{vars.gcs_bucket}}/nga_data.csv"
+
+  - id: extract_data_4
+    type: io.kestra.plugin.scripts.shell.Commands
+    outputFiles:
+      - "*.csv"
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - wget -qO bra_data.csv "https://datacatalogfiles.worldbank.org/ddh-published/0042083/1/DR0052678/bra-crowdsourcedpdcpilot02_final_obs_all_clean.csv"
+
+  - id: upload_to_gcs_data_4
+    type: io.kestra.plugin.gcp.gcs.Upload
+    serviceAccount: "{{secret('GCP_KEY')}}"
+    projectId: "{{secret('PROJECT_ID')}}"
+    from: "{{outputs.extract_data_4.outputFiles['bra_data.csv']}}"
+    to: "{{vars.gcs_bucket}}/bra_data.csv"
+
+  # STEP 2 - Clean with PySpark and write to GCS Silver
+  - id: spark_cleaning
+    type: io.kestra.plugin.scripts.python.Script
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      image: pyspark-gcs:latest
+    env:
+      GCP_KEY: "{{secret('GCP_KEY')}}"
+      PROJECT_ID: "{{secret('PROJECT_ID')}}"
+    script: |
+      import json
+      import os
+      import tempfile
+      from pyspark.sql import SparkSession
+      from pyspark.conf import SparkConf
+      from pyspark.context import SparkContext
+
+      creds = json.loads(os.environ["GCP_KEY"])
+      creds_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+      json.dump(creds, creds_file)
+      creds_file.close()
+      credentials_location = creds_file.name
+
+      os.environ["JAVA_HOME"] = "/opt/java/openjdk"
+
+      conf = SparkConf() \
+          .setMaster('local[*]') \
+          .setAppName('data_cleaning') \
+          .set("spark.driver.memory", "2g") \
+          .set("spark.jars", "/opt/gcs-connector-hadoop3-latest.jar") \
+          .set("spark.hadoop.google.cloud.auth.service.account.enable", "true") \
+          .set("spark.hadoop.google.cloud.auth.service.account.json.keyfile", credentials_location)
+
+      sc = SparkContext(conf=conf)
+      hadoop_conf = sc._jsc.hadoopConfiguration()
+      hadoop_conf.set("fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
+      hadoop_conf.set("fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
+      hadoop_conf.set("fs.gs.auth.service.account.json.keyfile", credentials_location)
+      hadoop_conf.set("fs.gs.auth.service.account.enable", "true")
+
+      spark = SparkSession.builder.config(conf=sc.getConf()).getOrCreate()
+
+      project_id = os.environ["PROJECT_ID"]
+      files = {
+          "zaf": f"gs://bronze-{project_id}/raw/zaf_data.csv",
+          "phl": f"gs://bronze-{project_id}/raw/phl_data.csv",
+          "nga": f"gs://bronze-{project_id}/raw/nga_data.csv",
+          "bra": f"gs://bronze-{project_id}/raw/bra_data.csv"
+      }
+
+      for name, path in files.items():
+          print(f"Processing {name}...")
+          df = spark.read.csv(path, header=True, inferSchema=True)
+          df_clean = df.dropDuplicates().dropna()
+          df_clean.repartition(4) \
+              .write \
+              .mode("overwrite") \
+              .parquet(f"gs://silver-{project_id}/cleaned/{name}/")
+          print(f"{name} done!")
+
+      print("Spark cleaning done!")
+
+  # STEP 3 - Load Silver parquet to BigQuery
+  - id: load_to_bigquery
+    type: io.kestra.plugin.scripts.python.Script
+    beforeCommands:
+      - pip install google-cloud-bigquery google-auth
+    env:
+      GCP_KEY: "{{secret('GCP_KEY')}}"
+      PROJECT_ID: "{{secret('PROJECT_ID')}}"
+    script: |
+      import json
+      import os
+      from google.cloud import bigquery
+      from google.oauth2 import service_account
+
+      creds_dict = json.loads(os.environ["GCP_KEY"])
+      credentials = service_account.Credentials.from_service_account_info(creds_dict)
+      project_id = os.environ["PROJECT_ID"]
+
+      client = bigquery.Client(credentials=credentials, project=project_id)
+
+      for name in ["zaf", "phl", "nga", "bra"]:
+          print(f"Loading {name} to BigQuery...")
+          uri = f"gs://silver-{project_id}/cleaned/{name}/*.parquet"
+          table_id = f"{project_id}.silver_dataset.{name}_data"
+
+          job_config = bigquery.LoadJobConfig(
+              source_format=bigquery.SourceFormat.PARQUET,
+              write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
+          )
+
+          load_job = client.load_table_from_uri(uri, table_id, job_config=job_config)
+          load_job.result()
+          print(f"{name} loaded!")
+
+      print("BigQuery loading done!")
