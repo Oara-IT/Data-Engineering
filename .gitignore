@@ -36,3 +36,4 @@ pq/
 
 # DBT
 dbt/profiles.yml
+.env_encoded
