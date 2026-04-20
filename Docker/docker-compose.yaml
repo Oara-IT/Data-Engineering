@@ -68,6 +68,6 @@ services:
     depends_on:
       kestra_postgres:
         condition: service_healthy
-      dns:
+    dns:
       - 8.8.8.8
       - 8.8.4.4
