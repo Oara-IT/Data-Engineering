@@ -87,3 +87,4 @@ Kestra pulls this image automatically when running the pipeline — no manual bu
    - Save to GCS Silver
    - Load into BigQuery
 
+[Data Engineering — Data Talks Club Project](https://github.com/Oara-IT/Data-Engineering)
